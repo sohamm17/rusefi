@@ -97,6 +97,24 @@ struct mc33972_config mc33972 = {
 #endif /* (BOARD_MC33972_COUNT > 0) */
 
 #if (BOARD_TLE8888_COUNT > 0)
+
+/**
+ * prior to May 2020 PE8,PE9&PE10 were working fine on MRE using TLE8888 driver
+ * In light of the coming changes we have to make an incompatible change.
+ * TODO: remove this code in 6? 12 months?
+ */
+output_pin_e fixTLE8888pinMREprior20200508(output_pin_e pin) {
+	if (pin == GPIOE_8) {
+		return TLE8888_PIN_21;
+	} else if (pin == GPIOE_9) {
+		return TLE8888_PIN_6;
+	} else if (pin == GPIOE_10) {
+		return TLE8888_PIN_5;
+	} else {
+		return pin;
+	}
+}
+
 struct tle8888_config tle8888_cfg = {
 	.spi_bus = NULL,
 	.spi_config = {

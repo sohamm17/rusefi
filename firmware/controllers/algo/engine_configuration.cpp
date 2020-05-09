@@ -36,6 +36,7 @@
 #include "accelerometer.h"
 #endif
 
+#include "smart_gpio.h"
 #include "custom_engine.h"
 #include "engine_template.h"
 #include "bmw_e34.h"
@@ -1420,6 +1421,22 @@ void validateConfiguration(DECLARE_ENGINE_PARAMETER_SIGNATURE) {
 		engineConfiguration->adcVcc = 3.0f;
 	}
 	engine->preCalculate(PASS_ENGINE_PARAMETER_SIGNATURE);
+
+#if (BOARD_TLE8888_COUNT > 0)
+	CONFIG(fuelPumpPin) = fixTLE8888pinMREprior20200508(CONFIG(fuelPumpPin));
+	CONFIG(idle.solenoidPin) = fixTLE8888pinMREprior20200508(CONFIG(idle.solenoidPin));
+	CONFIG(auxPidPins[0]) = fixTLE8888pinMREprior20200508(CONFIG(auxPidPins[0]));
+
+	for (int i = 0; i < GPPWM_CHANNELS;i++) {
+		CONFIG(gppwm)[i].pin = fixTLE8888pinMREprior20200508(CONFIG(gppwm)[i].pin);
+	}
+
+	for (int i = 0; i < INJECTION_PIN_COUNT;i++) {
+		CONFIG(injectionPins[i]) = fixTLE8888pinMREprior20200508(CONFIG(injectionPins[i]));
+	}
+
+#endif /* BOARD_TLE8888_COUNT */
+
 }
 
 void applyNonPersistentConfiguration(Logging * logger DECLARE_ENGINE_PARAMETER_SUFFIX) {
@@ -1432,11 +1449,11 @@ void applyNonPersistentConfiguration(Logging * logger DECLARE_ENGINE_PARAMETER_S
 
 #if EFI_ENGINE_CONTROL
 	ENGINE(initializeTriggerWaveform(logger PASS_ENGINE_PARAMETER_SUFFIX));
-#endif
+#endif // EFI_ENGINE_CONTROL
 
 #if EFI_FSIO
 	applyFsioConfiguration(PASS_ENGINE_PARAMETER_SIGNATURE);
-#endif
+#endif /* EFI_FSIO */
 }
 
 #if EFI_ENGINE_CONTROL
