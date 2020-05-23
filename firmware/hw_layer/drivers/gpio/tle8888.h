@@ -14,7 +14,7 @@
 
 #define TLE8888_OUTPUTS				28
 /* 4 misc channels */
-#define TLE8888_DIRECT_MISC			4
+#define TLE8888_DIRECT_MISC			8
 /* 4 IGN channels - INJ1..4 - IN1..4
  * 4 INJ channels - OUT1..4 - IN5..8 */
 #define TLE8888_DIRECT_OUTPUTS		(4 + 4 + TLE8888_DIRECT_MISC)
