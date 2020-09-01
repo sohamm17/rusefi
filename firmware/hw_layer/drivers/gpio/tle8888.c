@@ -49,6 +49,27 @@ EXTERN_ENGINE_CONFIGURATION;
  */
 
 /*==========================================================================*/
+/* Driver options.															*/
+/*==========================================================================*/
+
+/* Enable debug code */
+#define TLE8888_DEBUG
+
+// Looks like reset value is 113.6ms? 1.6ms * 0x47
+#define TLE8888_FWD_PERIOD_MS				20
+
+// we can change this value on TLE8888QK but we probably do not have a reason to change
+#define TLE8888_WWD_CLOSE_WINDOW_TIME_MS	100.8
+
+// unchangeable value for TLE8888QK
+#define TLE8888_WWD_OPEN_WINDOW_TIME_MS		12.8
+
+/* DOTO: add irq support */
+#define TLE8888_POLL_INTERVAL_MS			5
+
+#define TLE8888_DIAG_POLL_INTERVAL_MS		100
+
+/*==========================================================================*/
 /* Driver local definitions.												*/
 /*==========================================================================*/
 
@@ -57,10 +78,13 @@ EXTERN_ENGINE_CONFIGURATION;
 static bool drv_task_ready = false;
 
 typedef enum {
-	TLE8888_DISABLED = 0,
-	TLE8888_WAIT_INIT,
-	TLE8888_READY,
-	TLE8888_FAILED
+	TLE8888_STATE_DISABLED = 0,
+	TLE8888_STATE_ENABLED,
+	TLE8888_STATE_START,
+	TLE8888_STATE_WAIT_WD,
+	TLE8888_STATE_WAIT_INIT,
+	TLE8888_STATE_READY,
+	TLE8888_STATE_FAILED
 } tle8888_drv_state;
 
 // tle8888_mode_e
@@ -71,39 +95,23 @@ typedef enum {
 #define CMD_READ			(0 << 0)
 #define CMD_WRITE			(1 << 0)
 /* C7:1 */
-#define CMD_REG_ADDR(a)		(((a) & 0x7f) << 1)
+#define CMD_REG_ADDR(a)		(((uint16_t)(a) & 0x7f) << 1)
 /* CD7:0 */
-#define CMD_REG_DATA(d)		(((d) & 0xff) << 8)
+#define CMD_REG_DATA(d)		(((uint16_t)(d) & 0xff) << 8)
 
 #define CMD_WR(a, d)		(CMD_WRITE | CMD_REG_ADDR(a) | CMD_REG_DATA(d))
 #define CMD_R(a)			(CMD_READ | CMD_REG_ADDR(a))
 
-/* Window watchdog open WWDOWT window time = 12.8 mS - fixed value for TLE8888QK */
-#define CMD_WWDServiceCmd   CMD_WR(0x15, 0x03)
-#define FWDRespCmd(d)       CMD_WR(0x16, d)
-#define FWDRespSyncCmd(d)   CMD_WR(0x17, d)
+#define CMD_WWDSERVICE(d)	CMD_WR(0x15, d)
+#define CMD_FWDRESP(d)		CMD_WR(0x16, d)
+#define CMD_FWDRESPSYNC(d)	CMD_WR(0x17, d)
 
-#define CMD_SR_CODE			0x1a
-#define CMD_SR				CMD_WR(CMD_SR_CODE, 0x03)
-// 0x238 = 568
+#define REG_SR				0x1a
+#define CMD_SR				CMD_WR(REG_SR, 0x03)
 #define CMD_OE_SET			CMD_WR(0x1c, 0x02)
-/* not used
 #define CMD_OE_CLR			CMD_WR(0x1c, 0x01)
 #define CMD_LOCK			CMD_WR(0x1e, 0x02)
-*/
 #define CMD_UNLOCK			CMD_WR(0x1e, 0x01)
-
-#define WWDStat             0x36
-#define FWDStat0            0x37
-#define FWDStat1            0x38
-
-/* Status registers */
-#define CMD_OPSTAT(n)		CMD_R(0x34 + ((n) & 0x01))
-#define CMD_WWDSTAT			CMD_R(WWDStat)
-#define CMD_FWDSTAT0  		CMD_R(FWDStat0)
-#define CMD_FWDSTAT1        CMD_R(FWDStat1)
-#define CMD_TECSTAT			CMD_R(0x39)
-#define CMD_WdDiag			CMD_R(0x2e)
 
 /* Diagnostic */
 #define CMD_DIAG(n)			CMD_R(0x20 + ((n) & 0x01))
@@ -115,13 +123,28 @@ typedef enum {
 #define CMD_IGNDIAG			CMD_R(0x2d)
 #define CMD_WDDIAG			CMD_R(0x2e)
 
+/* Status registers */
+#define CMD_OPSTAT(n)		CMD_R(0x34 + ((n) & 0x01))
+#define REG_WWDSTAT			0x36
+#define CMD_WWDSTAT			CMD_R(REG_WWDSTAT)
+#define REG_FWDSTAT(n)		(0x37 + ((n) & 0x01))
+#define CMD_FWDSTAT(n)  	CMD_R(REG_FWDSTAT(n))
+#define REG_TECSTAT			0x39
+#define CMD_TECSTAT			CMD_R(REG_TECSTAT)
+#define CMD_WDDIAG			CMD_R(0x2e)
+
 #define CMD_OUTCONFIG(n, d)	CMD_WR(0x40 + (n), d)
 #define CMD_BRICONFIG(n, d)	CMD_WR(0x46 + ((n) & 0x01), d)
-//#define CMD_VRSCONFIG0(d)	CMD_WR(0x49, d)
-#define CMD_VRSCONFIG1(d)	CMD_WR(0x4a, d)
+#define CMD_IGNCONFIG(d)	CMD_WR(0x48, d)
+#define CMD_VRSCONFIG(n, d)	CMD_WR(0x49 + ((n) & 0x03), d)
+#define CMD_OPCONFIG0(d)	CMD_WR(0x4e, d)
 #define CMD_INCONFIG(n, d)	CMD_WR(0x53 + ((n) & 0x03), d)
 #define CMD_DDCONFIG(n, d)	CMD_WR(0x57 + ((n) & 0x03), d)
 #define CMD_OECONFIG(n, d)	CMD_WR(0x5b + ((n) & 0x03), d)
+#define CMD_WWDCONFIG(n, d)	CMD_WR(0x5f + ((n) & 0x01), d)
+#define CMD_FWDCONFIG(d)	CMD_WR(0x61, d)
+#define CMD_TECCONFIG(d)	CMD_WR(0x62, d)
+#define CMD_WDCONFIG(n, d)	CMD_WR(0x63 + ((n) & 0x01), d)
 #define CMD_CONT(n, d)		CMD_WR(0x7b + ((n) & 0x03), d)
 
 const uint8_t watchDogResponses[16][4] = {
@@ -156,45 +179,30 @@ const uint8_t watchDogResponses[16][4] = {
 /* OS */
 SEMAPHORE_DECL(tle8888_wake, 10 /* or BOARD_TLE8888_COUNT ? */);
 static THD_WORKING_AREA(tle8888_thread_1_wa, 256);
+static bool drv_task_ready = false;
 
-// todo: much of state is currently global while technically it should be per-chip. but we
-// are lazy and in reality it's usually one chip per board
+#ifdef TLE8888_DEBUG
+	// todo: much of state is currently global while technically it should be per-chip. but we
+	// are lazy and in reality it's usually one chip per board
+	static uint16_t spiRxb = 0, spiTxb = 0;
+	static uint8_t functionWDrx = 0;
+	static uint8_t wdDiagResponse = 0;
 
+	static int selfResetCounter = 0;
+	static int lowVoltageResetCounter = 0;
+	static int requestedResetCounter = 0;
+	static int tle8888reinitializationCounter = 0;
 
-/**
- * For the timing check the microcontroller has to send periodically the window watchdog service command
- * WWDServiceCmd. The window watchdog is triggered correctly if the command is received inside the open
- * window of the window watchdog sequence.
- */
-static efitick_t lastWindowWatchdogTimeNt = 0;
+	// set debug_mode 31
+	static int tle8888SpiCounter = 0;
 
-static efitick_t lastFunctionWatchdogTimeNt = 0;
-
-static uint16_t WindowWatchdogErrorCounterValue;
-static uint16_t FunctionalWatchdogPassCounterValue;
-static uint16_t TotalErrorCounterValue;
-
-static uint16_t maybeFirstResponse = 0;
-static uint16_t functionWDrx = 0;
-static uint16_t wdDiagResponse = 0;
-
-//static_assert(TLE8888_POLL_INTERVAL_MS < Window_watchdog_open_window_time_ms)
-
-static bool needInitialSpi = true;
-static bool isWatchdogHappy = false;
-static bool wasWatchdogHappy = false;
-
-static int selfResetCounter = 0;
-static int lowVoltageResetCounter = 0;
-static int requestedResetCounter = 0;
-int tle8888reinitializationCounter = 0;
+	static uint8_t WindowWatchdogErrorCounterValue;
+	static uint8_t FunctionalWatchdogPassCounterValue;
+	static uint8_t TotalErrorCounterValue;
+#endif
 
 float vBattForTle8888 = 0;
-
-// set debug_mode 31
-static int tle8888SpiCounter = 0;
-static uint16_t spiRxb = 0, spiTxb = 0;
-
+static bool tleUndervoltage = false;
 
 /* Driver private data */
 struct tle8888_priv {
@@ -214,6 +222,9 @@ struct tle8888_priv {
 
 	tle8888_drv_state			drv_state;
 
+	/* direct drive mapping registers */
+	uint32_t					InConfig[TLE8888_DIRECT_MISC];
+
 	/* diagnostic registers */
 	uint8_t						OutDiag[5];
 	uint8_t						BriDiag[2];
@@ -223,6 +234,10 @@ struct tle8888_priv {
 
 	/* last diagnostick was read */
 	systime_t					ts_diag;
+
+	/* watchdog timestamps */
+	systime_t 					ts_WWD;
+	systime_t 					ts_FWD;
 };
 
 static struct tle8888_priv chips[BOARD_TLE8888_COUNT];
@@ -275,6 +290,7 @@ static SPIDriver *get_bus(struct tle8888_priv *chip)
  */
 static int tle8888_spi_rw(struct tle8888_priv *chip, uint16_t tx, uint16_t *rx)
 {
+	uint16_t rxdata;
 	SPIDriver *spi = get_bus(chip);
 
 	/**
@@ -292,18 +308,65 @@ static int tle8888_spi_rw(struct tle8888_priv *chip, uint16_t tx, uint16_t *rx)
 	/* Slave Select assertion. */
 	spiSelect(spi);
 	/* Atomic transfer operations. */
-	spiRxb = spiPolledExchange(spi, tx);
+	rxdata = spiPolledExchange(spi, tx);
 	//spiExchange(spi, 2, &tx, &rxb); 8 bit version just in case?
 	/* Slave Select de-assertion. */
 	spiUnselect(spi);
 	/* Ownership release. */
 	spiReleaseBus(spi);
-
-	spiTxb = tx;
-	tle8888SpiCounter++;
-
+	/* return received */
 	if (rx)
-		*rx = spiRxb;
+		*rx = rxdata;
+
+#ifdef TLE8888_DEBUG
+	spiTxb = tx;
+	spiRxb = rxdata;
+	tle8888SpiCounter++;
+#endif
+
+	/* no errors for now */
+	return 0;
+}
+
+/**
+ * @return always return 0 for now
+ */
+static int tle8888_spi_rw_array(struct tle8888_priv *chip, const uint16_t *tx, uint16_t *rx, int n)
+{
+	uint16_t rxdata;
+	SPIDriver *spi = get_bus(chip);
+
+	/**
+	 * 15.1 SPI Protocol
+	 *
+	 * after a read or write command: the address and content of the selected register
+	 * is transmitted with the next SPI transmission (for not existing addresses or
+	 * wrong access mode the data is always 0)
+	 */
+
+	/* Acquire ownership of the bus. */
+	spiAcquireBus(spi);
+	/* Setup transfer parameters. */
+	spiStart(spi, &chip->cfg->spi_config);
+
+	for (int i = 0; i < n; i++) {
+		/* Slave Select assertion. */
+		spiSelect(spi);
+		/* data transfer */
+		rxdata = spiPolledExchange(spi, tx[i]);
+		//spiExchange(spi, 2, &tx, &rxb); 8 bit version just in case?
+		if (rx)
+			rx[i] = rxdata;
+		/* Slave Select de-assertion. */
+		spiUnselect(spi);
+		#ifdef TLE8888_DEBUG
+			spiTxb = tx[i];
+			spiRxb = rxdata;
+			tle8888SpiCounter++;
+		#endif
+	}
+	/* Ownership release. */
+	spiReleaseBus(spi);
 
 	/* no errors for now */
 	return 0;
@@ -316,105 +379,105 @@ static int tle8888_spi_rw(struct tle8888_priv *chip, uint16_t tx, uint16_t *rx)
 
 static int tle8888_update_output(struct tle8888_priv *chip)
 {
+	int i;
 	int ret = 0;
 
 	/* TODO: lock? */
 
-	/* set value only for non-direct driven pins */
-	uint32_t out_data = chip->o_state & (~chip->o_direct_mask);
-	for (int i = 0; i < 4; i++) {
-		uint8_t od;
+	uint32_t briconfig0 = 0;
+	uint32_t out_data = chip->o_state;
 
-		od = (out_data >> (8 * i)) & 0xff;
-		ret |= tle8888_spi_rw(chip, CMD_CONT(i, od), NULL);
+	/* calculate briconfig0 */
+	uint32_t pp_low = out_data & chip->o_pp_mask;
+	for (i = 20; i < 24; i++) {
+		if (pp_low & BIT(i)) {
+			/* low-side switch mode */
+		} else {
+			/* else enable high-side switch mode */
+			briconfig0 |= BIT((i - 20) * 2);
+		}
 	}
+	/* TODO: set freewheeling bits in briconfig0? */
 
-	if (ret == 0) {
-		/* atomic */
-		chip->o_state_cached = out_data;
-	}
+	/* output for push-pull pins is allways enabled
+	 * (at least until we start supporting hi-Z state) */
+	out_data |= chip->o_pp_mask;
+	/* TODO: apply hi-Z mask when support will be added */
 
+	/* look like here is some conflict in case of
+	 * direct-driven PP output */
+	out_data &= (~chip->o_direct_mask);
+
+	uint16_t tx[] = {
+		/* bridge config */
+		CMD_BRICONFIG(0, briconfig0),
+		CMD_CONT(0, out_data >>  0),
+		CMD_CONT(1, out_data >>  8),
+		CMD_CONT(2, out_data >> 16),
+		CMD_CONT(3, out_data >> 24),
+	};
+	ret = tle8888_spi_rw_array(chip, tx, NULL, ARRAY_SIZE(tx));
 	/* TODO: unlock? */
+	if (ret) {
+		return ret;
+	}
+
+	/* atomic */
+	chip->o_state_cached = out_data;
 
 	return ret;
 }
 
 /**
- * @brief read TLE8888 OpStat1 and diagnostic registers data.
+ * @brief read TLE8888 diagnostic registers data.
  * @details Chained read of several registers
  */
 static int tle8888_update_status_and_diag(struct tle8888_priv *chip)
 {
 	int ret = 0;
-	uint16_t rx = 0;
+	const uint16_t tx[] = {
+		CMD_OUTDIAG(0),
+		CMD_OUTDIAG(1),
+		CMD_OUTDIAG(2),
+		CMD_OUTDIAG(3),
+		CMD_OUTDIAG(4),
+		CMD_BRIDIAG(0),
+		CMD_BRIDIAG(1),
+		CMD_IGNDIAG,
+		CMD_OPSTAT(0),
+		CMD_OPSTAT(1),
+		CMD_OPSTAT(1)
+	};
+	uint16_t rx[ARRAY_SIZE(tx)];
 
 	/* TODO: lock? */
-
-	// todo: extract helper method?
-	/* the address and content of the selected register is transmitted with the
-	 * next SPI transmission (for not existing addresses or wrong access mode
-	 * the data is always '0' */
-	/* this is quite expensive to call tle8888_spi_rw on each register read
-	 * TODO: implement tle8888_spi_rw_array ? */
-
-//	/* request OutDiad0, ignore received */
-//	if ((ret = tle8888_spi_rw(chip, CMD_OUTDIAG(0), NULL)))
-//		return ret;
-//
-//	/* request OutDiad1, receive OutDiag0 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_OUTDIAG(1), &rx)))
-//		return ret;
-//	chip->OutDiag[0] = getDataFromResponse(rx);
-//
-//	/* request OutDiad2, receive OutDiag1 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_OUTDIAG(2), &rx)))
-//		return ret;
-//	chip->OutDiag[1] = getDataFromResponse(rx);
-//
-//	/* request OutDiad3, receive OutDiag2 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_OUTDIAG(3), &rx)))
-//		return ret;
-//	chip->OutDiag[2] = getDataFromResponse(rx);
-//
-//	/* request OutDiad4, receive OutDiag3 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_OUTDIAG(4), &rx)))
-//		return ret;
-//	chip->OutDiag[3] = getDataFromResponse(rx);
-//
-//	/* request BriDiag0, receive OutDiag4 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_BRIDIAG(0), &rx)))
-//		return ret;
-//	chip->OutDiag[4] = getDataFromResponse(rx);
-//
-//	/* request BriDiag1, receive BriDiag0 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_BRIDIAG(1), &rx)))
-//		return ret;
-//	chip->BriDiag[0] = getDataFromResponse(rx);
-//
-//	/* request IgnDiag, receive BriDiag1 */
-//	if ((ret = tle8888_spi_rw(chip, CMD_IGNDIAG, &rx)))
-//		return ret;
-//	chip->BriDiag[1] = getDataFromResponse(rx);
-
-	/* request OpStat0, receive IgnDiag */
-	if ((ret = tle8888_spi_rw(chip, CMD_OPSTAT(0), &rx)))
-		return ret;
-//	chip->IgnDiag = getDataFromResponse(rx);
-
-	/* request OpStat1, receive OpStat0 */
-	if ((ret = tle8888_spi_rw(chip, CMD_OPSTAT(1), &rx)))
-		return ret;
-	chip->OpStat[0] = getDataFromResponse(rx);
-
-	/* request OpStat1, receive OpStat1 */
-	if ((ret = tle8888_spi_rw(chip, CMD_OPSTAT(1), &rx)))
-		return ret;
-	chip->OpStat[1] = getDataFromResponse(rx);
-
+	ret = tle8888_spi_rw_array(chip, tx, rx, ARRAY_SIZE(tx));
 	/* TODO: unlock? */
+
+	if (ret) {
+		return ret;
+	}
+
+	/* the address and content of the selected register is transmitted with the
+	 * next SPI transmission */
+	chip->OutDiag[0] = getDataFromResponse(rx[0 + 1]);
+	chip->OutDiag[1] = getDataFromResponse(rx[1 + 1]);
+	chip->OutDiag[2] = getDataFromResponse(rx[2 + 1]);
+	chip->OutDiag[3] = getDataFromResponse(rx[3 + 1]);
+	chip->OutDiag[4] = getDataFromResponse(rx[4 + 1]);
+	chip->BriDiag[0] = getDataFromResponse(rx[5 + 1]);
+	chip->BriDiag[1] = getDataFromResponse(rx[6 + 1]);
+	chip->IgnDiag    = getDataFromResponse(rx[7 + 1]);
+	chip->OpStat[0]  = getDataFromResponse(rx[8 + 1]);
+	chip->OpStat[1]  = getDataFromResponse(rx[9 + 1]);
 
 	return ret;
 }
+
+/**
+ * @brief Drives natve MCU pins connected to TLE8888 inputs
+ * @details This is faster than updating Cont registers over SPI
+ */
 
 static int tle8888_update_direct_output(struct tle8888_priv *chip, int pin, int value)
 {
@@ -477,147 +540,201 @@ static int tle8888_wake_driver(struct tle8888_priv *chip)
 	return 0;
 }
 
+static int tle8888_reset(struct tle8888_priv *chip)
+{
+	int ret;
+
+	ret = tle8888_spi_rw(chip, CMD_SR, NULL);
+	/**
+	 * Table 8. Reset Times. All reset times not more than 20uS
+	 */
+	chThdSleepMilliseconds(3);
+
+	/* Set WatchDogs and Total Error countes */
+	uint16_t tx[] = {
+		/* Set LOCK bit to 0 */
+		CMD_UNLOCK,
+		/* Same WDs settings as on TLE8888QK */
+		CMD_WWDCONFIG(1, 0x77),
+		CMD_FWDCONFIG(0xf7),
+		CMD_TECCONFIG(0x77),
+		CMD_WWDSERVICE((0x3f << 2) | (0x03 << 0)), /* 100.8 mS - closed window, 12.8 mS - open window */
+		CMD_WDCONFIG(1, 0x1b),
+	};
+	ret = tle8888_spi_rw_array(chip, tx, NULL, ARRAY_SIZE(tx));
+	if (ret) {
+		return ret;
+	}
+
+	return ret;
+}
+
+static int tle8888_chip_init(struct tle8888_priv *chip)
+{
+	int ret;
+	#ifdef TLE8888_DEBUG
+		tle8888reinitializationCounter++;
+	#endif
+
+	uint16_t tx[] = {
+		/* Set LOCK bit to 0 */
+		CMD_UNLOCK,
+		/* set INCONFIG - aux input mapping */
+		CMD_INCONFIG(0, chip->InConfig[0]),
+		CMD_INCONFIG(1, chip->InConfig[1]),
+		CMD_INCONFIG(2, chip->InConfig[2]),
+		CMD_INCONFIG(3, chip->InConfig[3]),
+		/* set OE and DD registers */
+		CMD_OECONFIG(0, chip->o_oe_mask >>  0),
+		CMD_DDCONFIG(0, chip->o_direct_mask >> 0),
+		CMD_OECONFIG(1, chip->o_oe_mask >>  8),
+		CMD_DDCONFIG(1, chip->o_direct_mask >> 8),
+		CMD_OECONFIG(2, chip->o_oe_mask >>  16),
+		CMD_DDCONFIG(2, chip->o_direct_mask >> 16),
+		CMD_OECONFIG(3, chip->o_oe_mask >>  24),
+		CMD_DDCONFIG(3, chip->o_direct_mask >> 24),
+		/* set VR mode: VRS/Hall */
+		CMD_VRSCONFIG(1, (0 << 4) |
+						 (chip->cfg->mode << 2) |
+						 (0 << 0)),
+		/* disable diagnostic pull-down current, current limitation in case of overcurrent */
+		CMD_OUTCONFIG(0, 0x00),
+		CMD_OUTCONFIG(1, 0x00),
+		CMD_OUTCONFIG(2, 0x00),
+		CMD_OUTCONFIG(3, 0x00),
+		CMD_OUTCONFIG(4, 0x00),
+		CMD_OUTCONFIG(5, 0x00),
+		/* enable outputs */
+		CMD_OE_SET
+	};
+	/* TODO: lock? */
+	ret = tle8888_spi_rw_array(chip, tx, NULL, ARRAY_SIZE(tx));
+	/* TODO: unlock? */
+
+	if (CONFIG(verboseTLE8888)) {
+		tle8888_dump_regs();
+	}
+
+	return ret;
+}
+
+/* Feed Window WatchDog */
+static int tle8888_WWD_feed(struct tle8888_priv *chip)
+{
+	/* Window watchdog open WWDOWT window time = 12.8 mS - fixed value for TLE8888QK */
+	tle8888_spi_rw(chip, CMD_WWDSERVICE(3), NULL);
+
+	return 0;
+}
+
+/* Feed Functional WatchDog */
+static int tle8888_FWD_feed(struct tle8888_priv *chip)
+{
+	uint16_t rx;
+
+	/* the address and content of the selected register is transmitted with the
+	 * next SPI transmission */
+	tle8888_spi_rw(chip, CMD_FWDSTAT(1), NULL);
+	/* here we get response of the 'FWDSTAT(1)' above */
+	tle8888_spi_rw(chip, CMD_WDDIAG, &rx);
+
+	if (getRegisterFromResponse(rx) != REG_FWDSTAT(1)) {
+		return -1;
+	}
+
+	uint8_t val = getDataFromResponse(rx);
+#ifdef TLE8888_DEBUG
+	functionWDrx = val;
+#endif
+	uint8_t FWDQUEST = val & 0x0F;
+	uint8_t FWDRESPC = (val >> 4) & 0x03;
+	/* Table lines are filled in reverse order (like in DS) */
+	uint8_t response = watchDogResponses[FWDQUEST][3 - FWDRESPC];
+
+	/* here we get response of the 'WDDIAG' above */
+	if (FWDRESPC) {
+		tle8888_spi_rw(chip, CMD_FWDRESP(response), &rx);
+	} else {
+		/* to restart heartbeat timer, sync command should be used for response 0 */
+		tle8888_spi_rw(chip, CMD_FWDRESPSYNC(response), &rx);
+	}
+
+#ifdef TLE8888_DEBUG
+	wdDiagResponse = getDataFromResponse(rx);
+#endif
+
+	return 0;
+}
+
+static int tle8888_WD_service(struct tle8888_priv *chip)
+{
+	int ret = 0;
+
+	/**
+	 * For the timing check the microcontroller has to send periodically the window watchdog service command
+	 * WWDServiceCmd. The window watchdog is triggered correctly if the command is received inside the open
+	 * window of the window watchdog sequence.
+	 */
+	if (chVTTimeElapsedSinceX(chip->ts_WWD) > TIME_MS2I(TLE8888_WWD_CLOSE_WINDOW_TIME_MS)) {
+		ret |= tle8888_WWD_feed(chip);
+		chip->ts_WWD = chVTGetSystemTimeX();
+	}
+
+	if (chVTTimeElapsedSinceX(chip->ts_FWD) > TIME_MS2I(TLE8888_FWD_PERIOD_MS)) {
+		ret |= tle8888_FWD_feed(chip);
+		chip->ts_FWD = chVTGetSystemTimeX();
+	}
+
+	return ret;
+}
+
+static int tle8888_WD_get_status(struct tle8888_priv *chip)
+{
+	uint16_t wwdstat_rx;
+	uint8_t wwd_counter;
+	uint16_t fwdstat_rx;
+	uint8_t fwd_counter;
+	uint16_t tecstat_rx;
+	//uint8_t tec_counter;
+
+	tle8888_spi_rw(chip, CMD_WWDSTAT, NULL);
+	tle8888_spi_rw(chip, CMD_FWDSTAT(0), &wwdstat_rx);
+	tle8888_spi_rw(chip, CMD_TECSTAT, &fwdstat_rx);
+	tle8888_spi_rw(chip, CMD_TECSTAT, &tecstat_rx);
+
+#ifdef TLE8888_DEBUG
+	WindowWatchdogErrorCounterValue = getDataFromResponse(wwdstat_rx) & 0x3f;
+	FunctionalWatchdogPassCounterValue = getDataFromResponse(fwdstat_rx) & 0x3f;
+	TotalErrorCounterValue = getDataFromResponse(tecstat_rx) & 0x3f;
+#endif
+
+	// sanity checking that we are looking at the right responses
+	if ((getRegisterFromResponse(wwdstat_rx) == REG_WWDSTAT) &&
+		(getRegisterFromResponse(fwdstat_rx) == REG_FWDSTAT(0)) &&
+		(getRegisterFromResponse(tecstat_rx) == REG_TECSTAT))
+	{
+		wwd_counter = getDataFromResponse(wwdstat_rx) & 0x3f;
+		fwd_counter = getDataFromResponse(fwdstat_rx) & 0x3f;
+		//tec_counter = getDataFromResponse(tecstat_rx) & 0x3f;
+
+		/* check for ready state */
+		if ((wwd_counter < 33) &&
+			(fwd_counter < 33)/* &&
+			(tec_counter < 33)*/) {
+			return 0;
+		}
+	}
+
+	/* SPI error or Safe state or Watchdog reset state */
+	return -1;
+}
+
 /*==========================================================================*/
 /* Driver thread.															*/
 /*==========================================================================*/
 
-static void handleFWDStat1(struct tle8888_priv *chip, int registerNum, int data) {
-	if (registerNum != FWDStat1)
-		return;
-	uint8_t FWDQUEST = data & 0xF;
-	uint8_t FWDRESPC = (data >> 4) & 3;
-	/* Table lines are filled in reverse order (like in DS) */
-	uint8_t response = watchDogResponses[FWDQUEST][3 - FWDRESPC];
-	if (FWDRESPC) {
-		tle8888_spi_rw(chip, FWDRespCmd(response), NULL);
-	} else {
-		/* to restart heartbeat timer, sync command should be used for response 0 */
-		tle8888_spi_rw(chip, FWDRespSyncCmd(response), NULL);
-	}
-	tle8888_spi_rw(chip, CMD_WdDiag, NULL);
-	tle8888_spi_rw(chip, CMD_WdDiag, &wdDiagResponse);
-}
-
-static int startupConfiguration(struct tle8888_priv *chip) {
-	const struct tle8888_config	*cfg = chip->cfg;
-	uint16_t response = 0;
-	/* Set LOCK bit to 0 */
-	// second 0x13D=317 => 0x35=53
-	tle8888_spi_rw(chip, CMD_UNLOCK, &response);
-
-	chip->o_direct_mask = 0;
-	chip->o_oe_mask		= 0;
-	/* HACK HERE if you want to enable PP for OUT21..OUT24
-	 * without approprirate call to setPinMode */
-	chip->o_pp_mask		= 0; /* = BIT(20) | BIT(21) | BIT(22) | BIT(23); */
-	/* enable direct drive of OUTPUT4..1
-	 * ...still need INJEN signal */
-	chip->o_direct_mask	|= 0x0000000f;
-	chip->o_oe_mask		|= 0x0000000f;
-	/* enable direct drive of IGN4..1
-	 * ...still need IGNEN signal */
-	chip->o_direct_mask |= 0x0f000000;
-	chip->o_oe_mask		|= 0x0f000000;
-
-	/* map and enable outputs for direct driven channels */
-	for (int i = 0; i < TLE8888_DIRECT_MISC; i++) {
-		int out = cfg->direct_io[i].output;
-
-		/* not used? */
-		if (out == 0)
-			continue;
-
-		/* OUT1..4 driven direct only through dedicated pins */
-		if (out < 5)
-			return -1;
-
-		/* in config counted from 1 */
-		uint32_t mask = (1 << (out - 1));
-
-		/* check if output already occupied */
-		if (chip->o_direct_mask & mask) {
-			/* incorrect config? */
-			return -1;
-		}
-
-		/* enable direct drive and output enable */
-		chip->o_direct_mask	|= mask;
-		chip->o_oe_mask		|= mask;
-
-		/* set INCONFIG - aux input mapping */
-		tle8888_spi_rw(chip, CMD_INCONFIG(i, out - 5), NULL);
-	}
-
-	/* enable all ouputs
-	 * TODO: add API to enable/disable? */
-	chip->o_oe_mask		|= 0x0ffffff0;
-
-	/* set OE and DD registers */
-	for (int i = 0; i < 4; i++) {
-		uint8_t oe, dd;
-
-		oe = (chip->o_oe_mask >> (8 * i)) & 0xff;
-		dd = (chip->o_direct_mask >> (8 * i)) & 0xff;
-		tle8888_spi_rw(chip, CMD_OECONFIG(i, oe), NULL);
-		tle8888_spi_rw(chip, CMD_DDCONFIG(i, dd), NULL);
-	}
-
-	/* Debug: disable diagnostic */
-	for (int i = 0; i <= 5; i++) {
-		tle8888_spi_rw(chip, CMD_OUTCONFIG(i, 0), NULL);
-	}
-
-	/* enable outputs */
-	tle8888_spi_rw(chip, CMD_OE_SET, NULL);
-
-	if (cfg->mode > 0) {
-		tle8888_spi_rw(chip, CMD_VRSCONFIG1(cfg->mode << 2), NULL);
-	}
-	return 0;
-}
-
-void watchdogLogic(struct tle8888_priv *chip) {
-	efitick_t nowNt = getTimeNowNt();
-	if (nowNt - lastWindowWatchdogTimeNt > MS2NT(Window_watchdog_close_window_time_ms)) {
-		tle8888_spi_rw(chip, CMD_WWDServiceCmd, &maybeFirstResponse);
-		lastWindowWatchdogTimeNt = nowNt;
-	}
-
-	if (nowNt - lastFunctionWatchdogTimeNt > MS2NT(Functional_Watchdog_PERIOD_MS)) {
-		// todo: extract helper method?
-		/* the address and content of the selected register is transmitted with the
-		 * next SPI transmission (for not existing addresses or wrong access mode
-		 * the data is always '0' */
-		tle8888_spi_rw(chip, CMD_FWDSTAT1, &maybeFirstResponse);
-		// here we get response of the 'FWDStat1' above
-		tle8888_spi_rw(chip, CMD_WdDiag, &functionWDrx);
-		handleFWDStat1(chip, getRegisterFromResponse(functionWDrx), getDataFromResponse(functionWDrx));
-		lastFunctionWatchdogTimeNt = nowNt;
-	}
-
-	tle8888_spi_rw(chip, CMD_WWDSTAT, NULL);
-	tle8888_spi_rw(chip, CMD_FWDSTAT0, &WindowWatchdogErrorCounterValue);
-	tle8888_spi_rw(chip, CMD_TECSTAT, &FunctionalWatchdogPassCounterValue);
-	tle8888_spi_rw(chip, CMD_TECSTAT, &TotalErrorCounterValue);
-
-
-	// sanity checking that we are looking at the right responses
-	if (getRegisterFromResponse(WindowWatchdogErrorCounterValue) == WWDStat &&
-			getRegisterFromResponse(FunctionalWatchdogPassCounterValue) == FWDStat0
-			) {
-
-		wasWatchdogHappy = isWatchdogHappy;
-		// reset state for error counters has us start in Safe Mode
-		isWatchdogHappy = (getWindowWatchdog() == 0 && getFunctionalWatchdog() == 0);
-		if (!wasWatchdogHappy && isWatchdogHappy) {
-			startupConfiguration(chip);
-		}
-	}
-}
-
-int tle8888SpiStartupExchange(struct tle8888_priv *chip);
-
-static THD_FUNCTION(tle8888_driver_thread, p) {
+static THD_FUNCTION(tle8888_driver_thread, p)
+{
 	(void)p;
 
 	chRegSetThreadName(DRIVER_NAME);
@@ -629,60 +746,99 @@ static THD_FUNCTION(tle8888_driver_thread, p) {
 		(void)msg;
 
 		if (vBattForTle8888 < LOW_VBATT) {
-			// we assume TLE8888 is down and we should not bother with SPI communication
-			if (!needInitialSpi) {
-				needInitialSpi = true;
+			#ifdef TLE8888_DEBUG
+			if (!tleUndervoltage)
 				lowVoltageResetCounter++;
+			#endif
+			tleUndervoltage = true;
+			/* we should not bother communicating with TLE8888 until we have +12 */
+			continue;
+		} else {
+			if (tleUndervoltage) {
+				/**
+				 * We need around 50ms to get reliable TLE8888 start if MCU is powered externally but +12 goes gown and then goes up
+				 * again
+				 */
+				chThdSleepMilliseconds(50);
+				/* restart all chips */
+				for (int i = 0; i < BOARD_TLE8888_COUNT; i++) {
+					struct tle8888_priv *chip = &chips[i];
+					if ((chip->cfg == NULL) ||
+						(chip->drv_state == TLE8888_STATE_DISABLED))
+						continue;
+					chip->drv_state = TLE8888_STATE_WAIT_WD;
+				}
 			}
-			continue; // we should not bother communicating with TLE8888 until we have +12
+			tleUndervoltage = false;
 		}
-
-		if (needInitialSpi) {
-			wasWatchdogHappy = isWatchdogHappy = needInitialSpi = false;
-
-			for (int i = 0; i < BOARD_TLE8888_COUNT; i++) {
-				struct tle8888_priv *chip = &chips[i];
-				tle8888SpiStartupExchange(chip);
-			}
-		}
-
-		// todo: super-lazy implementation with only first chip!
-		watchdogLogic(&chips[0]);
 
 		for (int i = 0; i < BOARD_TLE8888_COUNT; i++) {
 			struct tle8888_priv *chip = &chips[i];
 			if ((chip->cfg == NULL) ||
-				(chip->drv_state == TLE8888_DISABLED) ||
-				(chip->drv_state == TLE8888_FAILED))
+				(chip->drv_state == TLE8888_STATE_DISABLED) ||
+				(chip->drv_state == TLE8888_STATE_FAILED))
 				continue;
 
-			int ret = tle8888_update_output(chip);
-			if (ret) {
-				/* set state to TLE8888_FAILED? */
+			if (chip->drv_state == TLE8888_STATE_START) {
+				tle8888_reset(chip);
+				#ifdef TLE8888_DEBUG
+					requestedResetCounter++;
+				#endif
+				chip->drv_state = TLE8888_STATE_WAIT_WD;
 			}
 
-			if (chVTTimeElapsedSinceX(chip->ts_diag) >= TIME_MS2I(TLE8888_POLL_INTERVAL_MS)) {
-				/* this is expensive call, will do a lot of spi transfers... */
-				ret = tle8888_update_status_and_diag(chip);
+			/* Chip is blocked by WD counters */
+			if (chip->drv_state == TLE8888_STATE_WAIT_WD) {
+				/* TODO: check return? */
+				tle8888_WD_service(chip);
+
+				if (tle8888_WD_get_status(chip) == 0) {
+					chip->drv_state = TLE8888_STATE_WAIT_INIT;
+				}// else {
+				//	continue;
+				//}
+			}
+
+			if (chip->drv_state == TLE8888_STATE_WAIT_INIT) {
+				if (tle8888_chip_init(chip) == 0) {
+					chip->drv_state = TLE8888_STATE_READY;
+				}// else {
+				//	continue;
+				//}
+			}
+
+			if ((chip->drv_state == TLE8888_STATE_READY) || (1)) {
+				tle8888_chip_init(chip);
+				int ret = tle8888_update_output(chip);
 				if (ret) {
-					/* set state to TLE8888_FAILED or force reinit? */
+					/* set state to TLE8888_FAILED? */
 				}
 
-				chip->ts_diag = chVTGetSystemTimeX();
-			}
+				ret = tle8888_WD_service(chip);
+				if (ret) {
+					chip->drv_state = TLE8888_STATE_START;
+				}
 
-			/* if bit OE is cleared - reset happened */
-			if (!(chip->OpStat[1] & (1 << 6))) {
-				needInitialSpi = true;
-				selfResetCounter++;
+				if (chVTTimeElapsedSinceX(chip->ts_diag) >= TIME_MS2I(TLE8888_DIAG_POLL_INTERVAL_MS)) {
+					/* this is expensive call, will do a lot of spi transfers... */
+					ret = tle8888_update_status_and_diag(chip);
+					if (ret) {
+						/* set state to TLE8888_FAILED or force reinit? */
+					}
+
+					chip->ts_diag = chVTGetSystemTimeX();
+				}
+
+				/* if bit OE is cleared - reset happened */
+				if (!(chip->OpStat[1] & (1 << 6))) {
+					chip->drv_state = TLE8888_STATE_START;
+					#ifdef TLE8888_DEBUG
+						selfResetCounter++;
+					#endif
+				}
 			}
 		}
 	}
-}
-
-void requestTLE8888initialization(void) {
-	needInitialSpi = true;
-	requestedResetCounter++;
 }
 
 /*==========================================================================*/
@@ -698,8 +854,7 @@ static int tle8888_setPadMode(void *data, unsigned int pin, iomode_t mode) {
 	if ((pin >= TLE8888_OUTPUTS) || (data == NULL))
 		return -1;
 
-	/* do not enalbe PP mode yet */
-#if 0
+#if 1
 	struct tle8888_priv *chip = (struct tle8888_priv *)data;
 
 	/* only OUT21..OUT24 support mode change: PP vs OD */
@@ -726,6 +881,7 @@ static int tle8888_writePad(void *data, unsigned int pin, int value) {
 
 	struct tle8888_priv *chip = (struct tle8888_priv *)data;
 
+	uint32_t o_state_tmp = chip->o_state;
 	/* TODO: lock */
 	if (value) {
 		chip->o_state |=  (1 << pin);
@@ -737,7 +893,8 @@ static int tle8888_writePad(void *data, unsigned int pin, int value) {
 	if (chip->o_direct_mask & (1 << pin)) {
 		return tle8888_update_direct_output(chip, pin, value);
 	} else {
-		return tle8888_wake_driver(chip);
+		if (o_state_tmp != chip->o_state)
+			return tle8888_wake_driver(chip);
 	}
 	return 0;
 }
@@ -810,56 +967,17 @@ static brain_pin_diag_e tle8888_getDiag(void *data, unsigned int pin)
 	return PIN_OK;
 }
 
-/**
- * @return 0 for valid configuration, -1 for invalid configuration
- */
-int tle8888SpiStartupExchange(struct tle8888_priv *chip) {
-	const struct tle8888_config	*cfg = chip->cfg;
-
-	tle8888reinitializationCounter++;
-
-	/**
-	 * We need around 50ms to get reliable TLE8888 start if MCU is powered externally but +12 goes gown and then goes up
-	 * again
-	 */
-	chThdSleepMilliseconds(50);
-
-	watchdogLogic(chip);
-
-	/* Software reset */
-	uint16_t response = 0;
-	tle8888_spi_rw(chip, CMD_SR, NULL);
-	tle8888_spi_rw(chip, CMD_UNLOCK, &response);
-	if (response != (CMD_WRITE | CMD_REG_ADDR(CMD_SR_CODE))) {
-		firmwareError(CUSTOM_ERR_TLE8888_RESPONSE, "please check your VBatt wiring and TLE8888 soldering r=%x while vbatt=%f", response, vBattForTle8888);
-	}
-
-	/**
-	 * Table 8. Reset Times. All reset times not more than 20uS
-	 *
-	 */
-	chThdSleepMilliseconds(3);
-
-	startupConfiguration(chip);
-
-	/* enable pins */
-	if (cfg->ign_en.port)
-		palSetPort(cfg->ign_en.port, PAL_PORT_BIT(cfg->ign_en.pad));
-	if (cfg->inj_en.port)
-		palSetPort(cfg->inj_en.port, PAL_PORT_BIT(cfg->inj_en.pad));
-
-	if (CONFIG(verboseTLE8888)) {
-		tle8888_dump_regs();
-	}
-
-	return 0;
-}
-
-static int tle8888_chip_init(void * data) {
+static int tle8888_chip_init_data(void * data) {
+	int i;
 	struct tle8888_priv *chip = (struct tle8888_priv *)data;
 	const struct tle8888_config	*cfg = chip->cfg;
 
 	int ret = 0;
+
+	chip->o_direct_mask = 0;
+	chip->o_oe_mask		= 0;
+	chip->o_pp_mask		= 0;
+
 	/* mark pins used */
 	// we do not initialize CS pin so we should not be marking it used - i'm sad
 	//ret = gpio_pin_markUsed(cfg->spi_config.ssport, cfg->spi_config.sspad, DRIVER_NAME " CS");
@@ -878,20 +996,62 @@ static int tle8888_chip_init(void * data) {
 		palSetPadMode(cfg->inj_en.port, cfg->inj_en.pad, PAL_MODE_OUTPUT_PUSHPULL);
 		palClearPort(cfg->inj_en.port, PAL_PORT_BIT(cfg->inj_en.pad));
 	}
-	for (int i = 0; i < TLE8888_DIRECT_MISC; i++) {
-		if (cfg->direct_io[i].port) {
-// TODO: we need this but that's incompatible configuration change
-//			ret |= gpio_pin_markUsed(cfg->direct_io[i].port, cfg->direct_io[i].pad, DRIVER_NAME " DIRECT IO");
-//			palSetPadMode(cfg->direct_io[i].port, cfg->direct_io[i].pad, PAL_MODE_OUTPUT_PUSHPULL);
-//			palClearPort(cfg->direct_io[i].port, PAL_PORT_BIT(cfg->direct_io[i].pad));
+
+	for (i = 0; i < TLE8888_DIRECT_MISC; i++) {
+		int out = cfg->direct_io[i].output;
+
+		if ((out == 0) || (cfg->direct_io[i].port == NULL))
+			continue;
+
+		//ret = gpio_pin_markUsed(cfg->direct_io[i].port, cfg->direct_io[i].pad, DRIVER_NAME " DIRECT IO");
+		//if (ret) {
+		//	ret = -1;
+		//	goto err_gpios;
+		//}
+		// Keep setting to safe state
+		palSetPadMode(cfg->direct_io[i].port, cfg->direct_io[i].pad, PAL_MODE_OUTPUT_PUSHPULL);
+		palClearPort(cfg->direct_io[i].port, PAL_PORT_BIT(cfg->direct_io[i].pad));
+
+		/* OUT1..4 driven direct only through dedicated pins */
+		if (out < 5) {
+			ret = -1;
+			goto err_gpios;
 		}
+
+		/* in config counted from 1 */
+		uint32_t mask = (1 << (out - 1));
+
+		/* check if output already occupied */
+		if (chip->o_direct_mask & mask) {
+			/* incorrect config? */
+			ret = -1;
+			goto err_gpios;
+		}
+
+		/* enable direct drive and output enable */
+		chip->o_direct_mask	|= mask;
+		chip->o_oe_mask		|= mask;
+
+		/* calculate INCONFIG - aux input mapping */
+		chip->InConfig[i] = out - 5;
 	}
 
+	/* HACK HERE if you want to enable PP for OUT21..OUT24
+	 * without approprirate call to setPinMode */
+	//chip->o_pp_mask		|= BIT(20) | BIT(21) | BIT(22) | BIT(23);
 
-	if (ret) {
-		ret = -1;
-		goto err_gpios;
-	}
+	/* enable direct drive of OUTPUT4..1
+	 * ...still need INJEN signal */
+	chip->o_direct_mask	|= 0x0000000f;
+	chip->o_oe_mask		|= 0x0000000f;
+	/* enable direct drive of IGN4..1
+	 * ...still need IGNEN signal */
+	chip->o_direct_mask |= 0x0f000000;
+	chip->o_oe_mask		|= 0x0f000000;
+
+	/* enable all ouputs
+	 * TODO: add API to enable/disable? */
+	chip->o_oe_mask		|= 0x0ffffff0;
 
 	return 0;
 
@@ -914,14 +1074,6 @@ err_gpios:
 	return ret;
 }
 
-/* DEBUG */
-void tle8888_read_reg(uint16_t reg, uint16_t *val)
-{
-	struct tle8888_priv *chip = &chips[0];
-
-	tle8888_spi_rw(chip, CMD_R(reg), val);
-}
-
 static int tle8888_init(void * data)
 {
 	int ret;
@@ -930,14 +1082,14 @@ static int tle8888_init(void * data)
 	chip = (struct tle8888_priv *)data;
 
 	/* check for multiple init */
-	if (chip->drv_state != TLE8888_WAIT_INIT)
+	if (chip->drv_state != TLE8888_STATE_ENABLED)
 		return -1;
 
-	ret = tle8888_chip_init(chip);
+	ret = tle8888_chip_init_data(chip);
 	if (ret)
 		return ret;
 
-	chip->drv_state = TLE8888_READY;
+	chip->drv_state = TLE8888_STATE_START;
 
 	/* one task for all TLE8888 instances, so create only once */
 	if (!drv_task_ready) {
@@ -959,6 +1111,8 @@ static int tle8888_deinit(void *data)
 		palClearPort(cfg->ign_en.port, PAL_PORT_BIT(cfg->ign_en.pad));
 	if (cfg->inj_en.port)
 		palClearPort(cfg->inj_en.port, PAL_PORT_BIT(cfg->inj_en.pad));
+
+	chip->drv_state = TLE8888_STATE_DISABLED;
 
 	/* TODO: stop task? */
 	return 0;
@@ -1002,7 +1156,7 @@ int tle8888_add(unsigned int index, const struct tle8888_config *cfg) {
 	chip->o_state = 0;
 	chip->o_state_cached = 0;
 	chip->o_direct_mask = 0;
-	chip->drv_state = TLE8888_WAIT_INIT;
+	chip->drv_state = TLE8888_STATE_ENABLED;
 
 	/* register, return gpio chip base */
 	int ret = gpiochip_register(DRIVER_NAME, &tle8888_ops, TLE8888_OUTPUTS, chip);
@@ -1011,6 +1165,53 @@ int tle8888_add(unsigned int index, const struct tle8888_config *cfg) {
 	gpiochips_setPinNames(ret, tle8888_pin_names);
 
 	return ret;
+}
+
+void requestTLE8888initialization(void)
+{
+	for (int i = 0; i < BOARD_TLE8888_COUNT; i++) {
+		struct tle8888_priv *chip = &chips[i];
+		if (chip->cfg == NULL)
+			continue;
+		//chip->drv_state = TLE8888_STATE_START;
+	}
+#ifdef TLE8888_DEBUG
+	requestedResetCounter++;
+#endif
+}
+
+/*==========================================================================*/
+/* Driver exported debug functions.											*/
+/*==========================================================================*/
+
+#if EFI_TUNER_STUDIO
+// set debug_mode 31
+void tle8888PostState(TsDebugChannels *debugChannels)
+{
+#ifdef TLE8888_DEBUG
+	debugChannels->debugIntField1 = WindowWatchdogErrorCounterValue;
+	debugChannels->debugIntField2 = FunctionalWatchdogPassCounterValue;
+	debugChannels->debugIntField3 = TotalErrorCounterValue;
+	//debugChannels->debugIntField1 = tle8888SpiCounter;
+	//debugChannels->debugIntField2 = spiTxb;
+	//debugChannels->debugIntField3 = spiRxb;
+	debugChannels->debugIntField5 = tle8888reinitializationCounter;
+
+	debugChannels->debugFloatField3 = chips[0].OpStat[1];
+	debugChannels->debugFloatField4 = selfResetCounter * 1000000 + requestedResetCounter * 10000 + lowVoltageResetCounter;
+	debugChannels->debugFloatField5 = functionWDrx;
+	debugChannels->debugFloatField6 = wdDiagResponse;
+#else
+	UNUSED(debugChannels);
+#endif
+}
+#endif /* EFI_TUNER_STUDIO */
+
+void tle8888_read_reg(uint16_t reg, uint16_t *val)
+{
+	struct tle8888_priv *chip = &chips[0];
+
+	tle8888_spi_rw(chip, CMD_R(reg), val);
 }
 
 #else /* BOARD_TLE8888_COUNT > 0 */
